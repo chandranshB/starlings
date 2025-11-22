@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nature's Cycle</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: radial-gradient(circle at 50% 100%, #1e293b 0%, #0f172a 50%, #020617 100%);
+        }
+
+        canvas {
+            display: block;
+        }
+
+        .ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+
+        h1 {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+            font-weight: 100;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 4rem;
+            letter-spacing: 0.5em;
+            text-transform: uppercase;
+            margin: 0;
+            text-shadow: 0 4px 30px rgba(0,0,0,0.5);
+        }
+
+        .quote {
+            font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+            font-weight: 300;
+            font-size: 1.1rem;
+            color: rgba(255, 255, 255, 0.5);
+            margin-top: 1.5rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            position: relative;
+            text-align: center;
+            max-width: 80%;
+            line-height: 1.6;
+        }
+
+        .quote::before {
+            content: '';
+            display: block;
+            width: 40px;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.3);
+            margin: 0 auto 1.5rem auto;
+        }
+        
+        @media (max-width: 768px) {
+            h1 { font-size: 2rem; letter-spacing: 0.3em; }
+            .quote { font-size: 0.8rem; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ui-layer">
+        <h1>shandran</h1>
+        <p class="quote">I believe that if you look deep into nature, and you will understand everything better.</p>
+    </div>
+
+    <canvas id="world"></canvas>
+
+<script>
+    const canvas = document.getElementById('world');
+    const ctx = canvas.getContext('2d');
+
+    let width, height;
+
+    const CONFIG = {
+        count: 100,           // Number of birds
+        perception: 100,      // How far they see neighbors
+        separation: 30,       // Minimum personal space
+        maxSpeed: 3.5,        // Cruising speed
+        maxForce: 0.05,       // Steering ability (lower = smoother turns)
+        offScreenBuffer: 200, // How far off-screen they can fly
+        
+        // Physics Weights (Balance these to change flocking behavior)
+        alignW: 1.2,
+        cohesionW: 0.01,
+        separationW: 1.5,
+        centerBiasW: 0.005,
+        
+        baseSize: 8           // size of the bird
+    };
+
+    function resize() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    class Bird {
+        constructor() {
+            this.pos = { x: Math.random() * width, y: Math.random() * height };
+            this.vel = { x: (Math.random() - 0.5) * CONFIG.maxSpeed, y: (Math.random() - 0.5) * CONFIG.maxSpeed };
+            this.acc = { x: 0, y: 0 };
+            this.flapOffset = Math.random() * 1000;
+            this.flapSpeed = 0.1 + Math.random() * 0.05;
+            this.isGliding = false;
+            this.glideTimer = 0;
+        }
+
+        // Calculate forces based on neighbors
+        update(flock) {
+            let align = {x:0, y:0}, cohesion = {x:0, y:0}, separation = {x:0, y:0};
+            let total = 0;
+
+            for (let other of flock) {
+                if (other === this) continue;
+                let dx = other.pos.x - this.pos.x;
+                let dy = other.pos.y - this.pos.y;
+                let d = Math.sqrt(dx*dx + dy*dy);
+
+                if (d < CONFIG.perception) {
+                    align.x += other.vel.x; align.y += other.vel.y;
+                    cohesion.x += other.pos.x; cohesion.y += other.pos.y;
+                    if (d < CONFIG.separation) {
+                        separation.x += (this.pos.x - other.pos.x) / d;
+                        separation.y += (this.pos.y - other.pos.y) / d;
+                    }
+                    total++;
+                }
+            }
+
+            if (total > 0) {
+                align.x /= total; align.y /= total;
+                align = this.steer(align);
+                cohesion.x /= total; cohesion.y /= total;
+                cohesion.x -= this.pos.x; cohesion.y -= this.pos.y;
+                cohesion = this.steer(cohesion);
+                separation.x /= total; separation.y /= total;
+                separation = this.steer(separation);
+            }
+
+            // Subtle pull to center of screen
+            let center = { x: width/2, y: height/2 };
+            let centerDir = { x: center.x - this.pos.x, y: center.y - this.pos.y };
+            let distToCenter = Math.sqrt(centerDir.x**2 + centerDir.y**2);
+            if (distToCenter > 0) {
+                centerDir.x = (centerDir.x / distToCenter) * CONFIG.centerBiasW;
+                centerDir.y = (centerDir.y / distToCenter) * CONFIG.centerBiasW;
+            }
+
+            // Hard turn if way off-screen
+            let returnForce = {x:0, y:0};
+            let buffer = CONFIG.offScreenBuffer;
+            if (this.pos.x < -buffer) returnForce.x = CONFIG.maxForce;
+            if (this.pos.x > width + buffer) returnForce.x = -CONFIG.maxForce;
+            if (this.pos.y < -buffer) returnForce.y = CONFIG.maxForce;
+            if (this.pos.y > height + buffer) returnForce.y = -CONFIG.maxForce;
+
+            // Apply all forces
+            this.acc.x += align.x * CONFIG.alignW + cohesion.x * CONFIG.cohesionW + separation.x * CONFIG.separationW + centerDir.x + returnForce.x;
+            this.acc.y += align.y * CONFIG.alignW + cohesion.y * CONFIG.cohesionW + separation.y * CONFIG.separationW + centerDir.y + returnForce.y;
+
+            // Physics steps
+            this.vel.x += this.acc.x;
+            this.vel.y += this.acc.y;
+
+            // Limit speed
+            let speed = Math.sqrt(this.vel.x**2 + this.vel.y**2);
+            if (speed > CONFIG.maxSpeed) {
+                this.vel.x = (this.vel.x / speed) * CONFIG.maxSpeed;
+                this.vel.y = (this.vel.y / speed) * CONFIG.maxSpeed;
+            }
+
+            this.pos.x += this.vel.x;
+            this.pos.y += this.vel.y;
+            this.acc = {x:0, y:0};
+
+            // Random chance to glide
+            this.glideTimer++;
+            if (this.glideTimer > 60 && Math.random() < 0.02) {
+                this.isGliding = !this.isGliding;
+                this.glideTimer = 0;
+            }
+        }
+
+        // Steering helper function
+        steer(target) {
+            let d = Math.sqrt(target.x**2 + target.y**2);
+            if (d === 0) return {x:0, y:0};
+            target.x = (target.x / d) * CONFIG.maxSpeed;
+            target.y = (target.y / d) * CONFIG.maxSpeed;
+            let steer = { x: target.x - this.vel.x, y: target.y - this.vel.y };
+            let steerLen = Math.sqrt(steer.x**2 + steer.y**2);
+            if (steerLen > CONFIG.maxForce) {
+                steer.x = (steer.x / steerLen) * CONFIG.maxForce;
+                steer.y = (steer.y / steerLen) * CONFIG.maxForce;
+            }
+            return steer;
+        }
+
+        // Draw the bird using Bezier curves
+        draw(ctx, time) {
+            const angle = Math.atan2(this.vel.y, this.vel.x);
+            ctx.save();
+            ctx.translate(this.pos.x, this.pos.y);
+            ctx.rotate(angle);
+            
+            // Calculate wing flap position
+            let flapY = !this.isGliding ? Math.sin(time * this.flapSpeed + this.flapOffset) * CONFIG.baseSize : -CONFIG.baseSize * 0.2;
+            
+            ctx.beginPath();
+            ctx.fillStyle = "rgba(220, 230, 240, 0.5)"; 
+            ctx.moveTo(3, 0); // Nose
+            // Right Wing curve
+            ctx.quadraticCurveTo(0, -CONFIG.baseSize, -CONFIG.baseSize, -CONFIG.baseSize * 1.5 + flapY);
+            ctx.lineTo(-5, 0); // Tail
+            // Left Wing curve
+            ctx.quadraticCurveTo(0, CONFIG.baseSize, -CONFIG.baseSize, CONFIG.baseSize * 1.5 - flapY);
+            ctx.lineTo(3, 0); // Back to Nose
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    // Initialize flock
+    const flock = [];
+    for(let i=0; i<CONFIG.count; i++) flock.push(new Bird());
+
+    let time = 0;
+    // Animation Loop
+    function animate() {
+        ctx.clearRect(0, 0, width, height);
+        for (let boid of flock) {
+            boid.update(flock);
+            boid.draw(ctx, time);
+        }
+        time++;
+        requestAnimationFrame(animate);
+    }
+    animate();
+</script>
+</body>
+</html>
